@@ -1,0 +1,22 @@
+name: ai_agent_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - requests
+  - pydantic
+  - faiss-cpu
+  - pip:
+      - openai
+      - langchain
+      - tiktoken
+      - chromadb
+      - python-dotenv
+      - transformers
+      - torch
+      - litellm
+
