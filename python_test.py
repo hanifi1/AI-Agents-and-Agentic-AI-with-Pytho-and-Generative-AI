@@ -156,44 +156,136 @@ def list_files() -> list:
 
 
     
-def read_data(file_name: str) -> pd.DataFrame:
+# def read_data(file_name: str) -> pd.DataFrame:
+#     """
+#     Reads a CSV or Excel file from a given file path into a pandas DataFrame.
+#     Handles errors for non-existent files or unsupported formats.
+#     """
+#     path =  "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
+#     file = os.path.join(path, file_name)
+#     try:
+#         # Check the file extension to use the correct pandas function
+#         if file.endswith('.csv'):
+#             df = pd.read_csv(file)
+#             return df.to_dict(orient="records")
+#         elif file.endswith('.xlsx'):
+#             df = pd.read_excel(file)
+#             return df.to_dict(orient="records")
+#         else:
+#             # If the format isn't supported, we return an error message
+#             return "Error: Unsupported file format. Please use .csv or .xlsx."
+#     except FileNotFoundError:
+#         # If the file doesn't exist, we return an error message
+#         return f"Error: File not found at {file}"
+#     except Exception as e:
+#         # Catch any other potential errors during file reading
+#         return f"An error occurred: {e}"
+
+
+def read_data(file_name: str, max_rows: int = 10) -> pd.DataFrame:
     """
     Reads a CSV or Excel file from a given file path into a pandas DataFrame.
+    Returns only the first `max_rows` rows to prevent overloading.
     Handles errors for non-existent files or unsupported formats.
+    
+    Args:
+        file_name (str): Name of the file to read.
+        max_rows (int): Maximum number of rows to read (default 500).
+    
+    Returns:
+        pd.DataFrame: DataFrame with at most `max_rows` rows.
     """
-    path =  "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
+    import os
+    import pandas as pd
+
+    path = "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
     file = os.path.join(path, file_name)
+
     try:
-        # Check the file extension to use the correct pandas function
+        # Read the file based on extension
         if file.endswith('.csv'):
-            df = pd.read_csv(file)
-            return df.to_dict(orient="records")
+            df = pd.read_csv(file, nrows=max_rows)
         elif file.endswith('.xlsx'):
-            df = pd.read_excel(file)
-            return df.to_dict(orient="records")
+            df = pd.read_excel(file, nrows=max_rows)
         else:
-            # If the format isn't supported, we return an error message
-            return "Error: Unsupported file format. Please use .csv or .xlsx."
+            raise ValueError("Unsupported file format. Please use .csv or .xlsx.")
+
+        return df
+
     except FileNotFoundError:
-        # If the file doesn't exist, we return an error message
-        return f"Error: File not found at {file}"
+        raise FileNotFoundError(f"File not found at {file}")
     except Exception as e:
-        # Catch any other potential errors during file reading
-        return f"An error occurred: {e}"
+        raise RuntimeError(f"An error occurred while reading the file: {e}")
     
 
-def analyze_data(df: pd.DataFrame, command: str):
+# def analyze_data(df: pd.DataFrame, command: str):
+#     """
+#     Dynamically executes a pandas command on a DataFrame.
+#     Example command: "df['Sale_Amount'].mean()"
+#     """
+#     try:
+#         # The eval() function runs the code in the command string
+#         result = eval(command)
+#         return result
+#     except Exception as e:
+#         # If the command is invalid, return an error message
+#         return f"Error executing command: {e}"
+    
+def analyze_data(df: List[Dict], command: str, group_by: List[str] = None):
     """
-    Dynamically executes a pandas command on a DataFrame.
-    Example command: "df['Sale_Amount'].mean()"
+    Analyze data dynamically without sending full df to LLM.
+    - df: list of records
+    - command: string like 'total price', 'average quantity'
+    - group_by: list of columns to group by
     """
-    try:
-        # The eval() function runs the code in the command string
-        result = eval(command)
-        return result
-    except Exception as e:
-        # If the command is invalid, return an error message
-        return f"Error executing command: {e}"
+    import pandas as pd
+
+    df = pd.DataFrame(df)
+
+    numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns
+    object_cols = df.select_dtypes(include=["object"]).columns
+
+    result = {}
+
+    # If group_by is specified, perform groupby
+    if group_by:
+        grouped = df.groupby(group_by)
+    else:
+        grouped = [((), df)]  # single group
+
+    for group_keys, group_df in grouped:
+        # Create a key for group in the result
+        if group_by:
+            if not isinstance(group_keys, tuple):
+                group_keys = (group_keys,)
+            group_name = " | ".join([f"{col}={val}" for col, val in zip(group_by, group_keys)])
+        else:
+            group_name = "all_data"
+
+        group_result = {}
+
+        # Numeric columns
+        for col in numeric_cols:
+            if "sum" in command or "total" in command:
+                group_result[col + "_sum"] = group_df[col].sum()
+            if "mean" in command or "average" in command:
+                group_result[col + "_mean"] = group_df[col].mean()
+            if "max" in command:
+                group_result[col + "_max"] = group_df[col].max()
+            if "min" in command:
+                group_result[col + "_min"] = group_df[col].min()
+
+        # Categorical columns
+        for col in object_cols:
+            if "count" in command or "unique" in command or "value" in command:
+                group_result[col + "_value_counts"] = group_df[col].value_counts().to_dict()
+
+        result[group_name] = group_result
+
+    return result
+
+
+
 # Create and populate the action registry
 registry = ActionRegistry()
 
@@ -228,24 +320,56 @@ registry.register(Action(
     terminal=False
 ))  
 
+# registry.register(Action(
+#     name="analyze_data",
+#     function=analyze_data,
+#     description="Analyze the data using a pandas command.",
+#     parameters={
+#         "type": "object",
+#         "properties": {
+#             "df": {
+#                 "type": "array",
+#                 "description": "DataFrame data as a list of records",
+#                 "items": {
+#                     "type": "object",
+#                     "additionalProperties": True
+#                 }
+#             },
+#             "command": {
+#                 "type": "string",
+#                 "description": "Pandas command to execute on the DataFrame"
+#             }
+#         },
+#         "required": ["df", "command"]
+#     },
+#     terminal=False
+# ))
+
+
 registry.register(Action(
-    name="analyze_data",
-    function=analyze_data,
-    description="Analyze the data using a pandas command.",
+    name="dynamic_analyze_data",
+    function=analyze_data,  # your new function
+    description=(
+        "Analyze a CSV or Excel file dynamically. "
+        "Supports numeric aggregations (sum, mean, max, min) "
+        "and categorical counts. Can also group by one or more columns."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "df": {
                 "type": "array",
                 "description": "DataFrame data as a list of records",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": True
-                }
+                "items": {"type": "object", "additionalProperties": True},
             },
             "command": {
                 "type": "string",
-                "description": "Pandas command to execute on the DataFrame"
+                "description": "Instruction for the analysis, e.g., 'total price', 'average quantity'"
+            },
+            "group_by": {
+                "type": "array",
+                "description": "Optional list of columns to group by",
+                "items": {"type": "string"}
             }
         },
         "required": ["df", "command"]
