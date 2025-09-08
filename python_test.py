@@ -68,6 +68,9 @@ class Goal:
     name: str
     description: str
 
+
+
+
 goals = [
     Goal(
         priority=1,
@@ -100,6 +103,13 @@ goals = [
         description="Ask clarifying questions if the data or request is unclear."
     )
 ]
+
+
+class FileExplorerAgent:
+    def __init__(self, registry):
+        self.registry = registry
+        self.memory = []
+        self.dataframes = {}
 
 
 
@@ -182,41 +192,77 @@ def list_files() -> list:
 #         return f"An error occurred: {e}"
 
 
-def read_data(file_name: str, max_rows: int = 10) -> pd.DataFrame:
-    """
-    Reads a CSV or Excel file from a given file path into a pandas DataFrame.
-    Returns only the first `max_rows` rows to prevent overloading.
-    Handles errors for non-existent files or unsupported formats.
+# def read_data(file_name: str, max_rows: int = 10) -> pd.DataFrame:
+#     """
+#     Reads a CSV or Excel file from a given file path into a pandas DataFrame.
+#     Returns only the first `max_rows` rows to prevent overloading.
+#     Handles errors for non-existent files or unsupported formats.
     
-    Args:
-        file_name (str): Name of the file to read.
-        max_rows (int): Maximum number of rows to read (default 500).
+#     Args:
+#         file_name (str): Name of the file to read.
+#         max_rows (int): Maximum number of rows to read (default 500).
     
-    Returns:
-        pd.DataFrame: DataFrame with at most `max_rows` rows.
-    """
-    import os
-    import pandas as pd
+#     Returns:
+#         pd.DataFrame: DataFrame with at most `max_rows` rows.
+#     """
+#     import os
+#     import pandas as pd
 
+#     path = "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
+#     file = os.path.join(path, file_name)
+
+#     try:
+#         # Read the file based on extension
+#         if file.endswith('.csv'):
+#             df = pd.read_csv(file, nrows=max_rows)
+#         elif file.endswith('.xlsx'):
+#             df = pd.read_excel(file, nrows=max_rows)
+#         else:
+#             raise ValueError("Unsupported file format. Please use .csv or .xlsx.")
+
+#         return df
+
+#     except FileNotFoundError:
+#         raise FileNotFoundError(f"File not found at {file}")
+#     except Exception as e:
+#         raise RuntimeError(f"An error occurred while reading the file: {e}")
+    
+
+def read_data(file_name: str, preview_rows: int = 10) -> dict:
+    """
+    Reads a CSV or Excel file and returns metadata + a preview of the data.
+    Keeps memory light by not returning the full DataFrame.
+    """
     path = "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
     file = os.path.join(path, file_name)
 
     try:
-        # Read the file based on extension
+        # Load dataframe
         if file.endswith('.csv'):
-            df = pd.read_csv(file, nrows=max_rows)
+            df = pd.read_csv(file)
+            preview = df.head(10).to_dict(orient="records")
         elif file.endswith('.xlsx'):
-            df = pd.read_excel(file, nrows=max_rows)
+            df = pd.read_excel(file)
+            preview = df.head(10).to_dict(orient="records")
         else:
-            raise ValueError("Unsupported file format. Please use .csv or .xlsx.")
+            return {"error": "Unsupported file format. Please use .csv or .xlsx."}
 
-        return df
+    
+        # Create metadata + preview (JSON-friendly)
+        metadata = {
+            "columns": df.columns.tolist(),
+            "shape": df.shape,
+            "preview": df.head(preview_rows).to_dict(orient="records")
+        }
+
+        return {"df": df, "metadata": metadata, "preview": preview}
 
     except FileNotFoundError:
-        raise FileNotFoundError(f"File not found at {file}")
+        return {"error": f"File not found at {file}"}
     except Exception as e:
-        raise RuntimeError(f"An error occurred while reading the file: {e}")
-    
+        return {"error": str(e)}
+
+
 
 # def analyze_data(df: pd.DataFrame, command: str):
 #     """
@@ -437,6 +483,7 @@ class Environment:
 
 
 
+
 class AgentLanguage:
     def __init__(self):
         pass
@@ -559,6 +606,7 @@ class Agent:
         self.agent_language = agent_language
         self.actions = action_registry
         self.environment = environment
+        self.dataframes = {}
 
     def construct_prompt(self, goals: List[Goal], memory: Memory, actions: ActionRegistry) -> Prompt:
         """Build prompt with memory context"""
@@ -581,20 +629,58 @@ class Agent:
     def set_current_task(self, memory: Memory, task: str):
         memory.add_memory({"type": "user", "content": task})
 
+    # def update_memory(self, memory: Memory, response: str, result: dict):
+    #     """
+    #     Update memory with the agent's decision and the environment's response.
+    #     """
+    #     new_memories = [
+    #         {"type": "assistant", "content": response},
+    #         {"type": "environment", "content": json.dumps(result)}
+    #     ]
+    #     for m in new_memories:
+    #         memory.add_memory(m)
+
+    # def prompt_llm_for_action(self, full_prompt: Prompt) -> str:
+    #     response = self.generate_response(full_prompt)
+    #     return response
+
+    def prompt_llm_for_action(self, prompt: str) -> dict:
+        response = self.generate_response(prompt)
+        return response
+    
+    
     def update_memory(self, memory: Memory, response: str, result: dict):
         """
         Update memory with the agent's decision and the environment's response.
+        Prevent leaking full DataFrames to the LLM by sanitizing the result.
         """
+        def default_serializer(obj):
+            if isinstance(obj, (pd.Timestamp,)):
+                return obj.isoformat()
+            return str(obj)
+        
+        
+        safe_result = result.copy()
+
+        # If result contains a dataframe or preview, trim it down
+        if "result" in safe_result and isinstance(safe_result["result"], dict):
+            if "preview" in safe_result["result"]:
+                # Keep only metadata and a small preview
+                safe_result["result"] = {
+                    "metadata": safe_result["result"].get("metadata", {}),
+                    "preview": safe_result["result"].get("preview", [])
+                }
+            elif "df" in safe_result["result"]:
+                # Strip out any raw DataFrame if passed by mistake
+                safe_result["result"].pop("df", None)
+
         new_memories = [
             {"type": "assistant", "content": response},
-            {"type": "environment", "content": json.dumps(result)}
+            {"type": "environment", "content": json.dumps(safe_result)}
         ]
         for m in new_memories:
             memory.add_memory(m)
 
-    def prompt_llm_for_action(self, full_prompt: Prompt) -> str:
-        response = self.generate_response(full_prompt)
-        return response
 
     def run(self, user_input: str, memory=None, max_iterations: int = 50) -> Memory:
         """
@@ -626,6 +712,27 @@ class Agent:
             # Execute the action in the environment
             result = self.environment.execute_action(action, invocation["args"])
             print(f"Action Result: {result}")
+
+            if action.name == 'read_data' and isinstance(result.get('result'),dict):
+                df = result['result'].get('df')
+                if df is not None:
+                    file_name = invocation['args']['file_name']
+                    self.dataframes[file_name] = df
+                    # script df befor passing back to LLM
+                    result['result'].pop('df', None)
+
+            #     # Build full path again
+            #     path = "/Users/mahdihanifi/Documents/GitHub/AI-Agents-and-Agentic-AI-with-Pytho-and-Generative-AI/documents"
+            #     file = os.path.join(path, file_name)
+
+            #     #load full DataFerame (not truncated)
+
+            #     if file.endswith('.csv'):
+            #         df = pd.read_csv(file)
+            #     else:
+            #         df = pd.read_excel(file)
+            # # Save internally for later analysis
+            # self.dataframes[file_name] = df
 
             # Update the agent's memory with information about what happened
             self.update_memory(memory, response, result)
@@ -662,3 +769,7 @@ final_memory = file_explorer_agent.run(user_input, max_iterations=10)
 # Print the final conversation if desired
 for item in final_memory.get_memories():
     print(f"\n{item['type'].upper()}: {item['content']}")
+
+
+
+# Total sales for Zara, calculated from the "Zara_Sales_Analysis.csv" file, is approximately $15,037,346.54.    38,988,476.48 
