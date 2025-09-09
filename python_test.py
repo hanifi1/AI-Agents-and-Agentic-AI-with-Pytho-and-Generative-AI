@@ -7,6 +7,7 @@ os.environ['OPENAI_API_KEY'] = api_key
 
 
 import pandas as pd
+import numpy as np
 from docx import Document
 import matplotlib.pyplot as plt
 
@@ -163,6 +164,48 @@ def list_files() -> list:
         return f"An error occurred: {e}"
     
 
+
+def custom_describe(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Returns a full analytical description of a DataFrame.
+    Handles both numeric and non-numeric columns.
+    Numeric: count, sum, mean, std, min, 25%, 50%, 75%, max, var, skew, kurt
+    Categorical: count, unique, top, freq
+    """
+    # Separate numeric and non-numeric columns
+    num_cols = df.select_dtypes(include=[np.number])
+    cat_cols = df.select_dtypes(exclude=[np.number])
+    
+    # Numeric summary
+    if not num_cols.empty:
+        num_summary = num_cols.describe(percentiles=[0.25, 0.5, 0.75]).T
+        num_summary['sum'] = num_cols.sum()
+        num_summary['var'] = num_cols.var()
+        num_summary['skew'] = num_cols.skew()
+        num_summary['kurt'] = num_cols.kurt()
+        num_summary = num_summary[['count','sum','mean','std','min','25%','50%','75%','max','var','skew','kurt']]
+    else:
+        num_summary = pd.DataFrame()
+    
+    # Categorical summary
+    if not cat_cols.empty:
+        cat_summary = pd.DataFrame(index=cat_cols.columns)
+        cat_summary['count'] = cat_cols.count()
+        cat_summary['unique'] = cat_cols.nunique()
+        cat_summary['top'] = cat_cols.apply(lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan)
+        cat_summary['freq'] = cat_cols.apply(lambda x: x.value_counts().iloc[0] if not x.value_counts().empty else np.nan)
+    else:
+        cat_summary = pd.DataFrame()
+    
+    # Combine numeric and categorical summaries
+    if not num_summary.empty and not cat_summary.empty:
+        summary = pd.concat([num_summary, cat_summary], axis=0, sort=False)
+    elif not num_summary.empty:
+        summary = num_summary
+    else:
+        summary = cat_summary
+    
+    return summary.reset_index().to_dict(orient="records")
 
 
     
@@ -347,7 +390,23 @@ registry.register(Action(
     terminal=False
 ))
 
-
+registry.register(Action(
+    name="describe_dataframe",
+    function=custom_describe,
+    description="Provides detailed summary statistics for numeric and categorical columns of a DataFrame.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "df": {
+                "type": "array",
+                "description": "DataFrame data as a list of records",
+                "items": {"type": "object", "additionalProperties": True}
+            }
+        },
+        "required": ["df"]
+    },
+    terminal=False
+))
 
 registry.register(Action(
     name="read_data",
@@ -708,6 +767,18 @@ class Agent:
                 # Treat as a non-terminal user message, cintinue the loop
                 memory.add_memory({"type": "user", "content": response})
                 continue    
+
+            if invocation["tool"] == "dynamic_analyze_data":
+                file_name = invocation["args"].get("file_name")  # the file you want to analyze
+                if file_name in self.dataframes:
+                    invocation["args"]["df"] = self.dataframes[file_name].to_dict(orient="records")
+                else:
+                    print(f"DataFrame for '{file_name}' not found. Make sure to read the file first.")
+                    memory.add_memory({"type": "user", "content": f"DataFrame for '{file_name}' not found."})
+                    continue
+
+            # Execute the action
+            result = self.environment.execute_action(action, invocation["args"])
 
             # Execute the action in the environment
             result = self.environment.execute_action(action, invocation["args"])
